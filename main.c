@@ -14,6 +14,7 @@
  *
  *          nome do jogador 1 | Vitorias: xxx
  *          nome do jogador 2 | Vitorias: xxx
+ *          Total de partidas: xxx | Empates: xxx
  *
  *  Compilacao:  gcc main.c -o tictactoe.exe
  *  Execucao:    .\tictactoe.exe
@@ -30,6 +31,8 @@
 #define TAM_LINHA  256      /* buffer auxiliar para leitura de linhas     */
 
 #define ROTULO_VITORIAS "Vitórias:"   /* rotulo usado no arquivo do placar  */
+#define ROTULO_PARTIDAS "Total de partidas:"
+#define ROTULO_EMPATES  "Empates:"
 
 /* ---------------------------------------------------------------------------
  *  ESTRUTURAS
@@ -39,6 +42,12 @@ typedef struct {
     char marca;                /* 'X' ou 'O'                                */
     int  vitorias;             /* placar acumulado com esses 2 jogadores    */
 } Jogador;
+
+/* Estatisticas gerais do par de jogadores (sao salvas junto com o placar). */
+typedef struct {
+    int partidas;   /* quantas partidas foram jogadas        */
+    int empates;    /* quantas partidas terminaram em velha  */
+} Estatisticas;
 
 /* ---------------------------------------------------------------------------
  *  FUNCOES DE ENTRADA (validacao robusta)
@@ -327,27 +336,33 @@ static void construirCaminhoDoPlacar(const Jogador *j1, const Jogador *j2,
     snprintf(destino, capacidade, "%s_X_%s.txt", j1->nome, j2->nome);
 }
 
-/* Extrai o numero de vitorias de uma linha no formato "... | Vitórias: n". */
-static int extrairVitorias(const char *linha)
+/* Extrai o numero apos uma determinada chave dentro de uma linha
+ * (ex.: "... | Vitórias: 3" com chave "Vitórias:" devolve 3). */
+static int extrairNumero(const char *linha, const char *chave)
 {
-    const char *marcador = strstr(linha, ROTULO_VITORIAS);
+    const char *marcador = strstr(linha, chave);
     if (marcador == NULL) {
         return 0;
     }
-    return atoi(marcador + strlen(ROTULO_VITORIAS));
+    return atoi(marcador + strlen(chave));
 }
 
-/* Mostra o placar no console no mesmo formato de tabela do arquivo . */
-static void imprimirPlacar(const Jogador *j1, const Jogador *j2)
+/* Mostra o placar (jogadores + estatisticas) no mesmo formato do arquivo . */
+static void imprimirPlacar(const Jogador *j1, const Jogador *j2,
+                           const Estatisticas *stats)
 {
     printf("\n========== PLACAR ==========\n");
     printf("%s | %s %d\n", j1->nome, ROTULO_VITORIAS, j1->vitorias);
     printf("%s | %s %d\n", j2->nome, ROTULO_VITORIAS, j2->vitorias);
+    printf("%s %d | %s %d\n",
+           ROTULO_PARTIDAS, stats->partidas,
+           ROTULO_EMPATES, stats->empates);
     printf("=============================\n");
 }
 
 /* Salva o placar dos dois jogadores em "<nome1>_X_<nome2>.txt" . */
-static void salvarPlacar(const Jogador *j1, const Jogador *j2)
+static void salvarPlacar(const Jogador *j1, const Jogador *j2,
+                         const Estatisticas *stats)
 {
     char caminho[MAX_NOME * 2 + 16];
     FILE *arquivo;
@@ -362,14 +377,18 @@ static void salvarPlacar(const Jogador *j1, const Jogador *j2)
 
     fprintf(arquivo, "%s | %s %d\n", j1->nome, ROTULO_VITORIAS, j1->vitorias);
     fprintf(arquivo, "%s | %s %d\n", j2->nome, ROTULO_VITORIAS, j2->vitorias);
+    fprintf(arquivo, "%s %d | %s %d\n",
+            ROTULO_PARTIDAS, stats->partidas,
+            ROTULO_EMPATES, stats->empates);
     fclose(arquivo);
 
     printf("\nPlacar salvo em \"%s\".\n", caminho);
 }
 
 /* Carrega o placar anterior (se existir) para que as vitorias acumulem
- * entre execucoes com os mesmos dois jogadores . */
-static void carregarPlacar(const char *caminho, Jogador *j1, Jogador *j2)
+ * e as estatisticas de partidas/empates continuem entre execucoes . */
+static void carregarPlacar(const char *caminho, Jogador *j1, Jogador *j2,
+                           Estatisticas *stats)
 {
     FILE *arquivo = fopen(caminho, "r");
     if (arquivo == NULL) {
@@ -380,14 +399,20 @@ static void carregarPlacar(const char *caminho, Jogador *j1, Jogador *j2)
     if (fgets(linha, sizeof linha, arquivo) != NULL) {
         char *separador = strchr(linha, '|');
         if (separador != NULL) {
-            j1->vitorias = extrairVitorias(separador);
+            j1->vitorias = extrairNumero(separador, ROTULO_VITORIAS);
         }
     }
     if (fgets(linha, sizeof linha, arquivo) != NULL) {
         char *separador = strchr(linha, '|');
         if (separador != NULL) {
-            j2->vitorias = extrairVitorias(separador);
+            j2->vitorias = extrairNumero(separador, ROTULO_VITORIAS);
         }
+    }
+    /* A terceira linha so existe se o placar foi gravado por esta
+     * versao; arquivos antigos comecam as estatisticas do zero . */
+    if (fgets(linha, sizeof linha, arquivo) != NULL) {
+        stats->partidas = extrairNumero(linha, ROTULO_PARTIDAS);
+        stats->empates  = extrairNumero(linha, ROTULO_EMPATES);
     }
     fclose(arquivo);
 
@@ -399,8 +424,10 @@ static void carregarPlacar(const char *caminho, Jogador *j1, Jogador *j2)
  * ------------------------------------------------------------------------- */
 
 /* Controla uma partida completa: aloca o tabuleiro, alterna os jogadores,
- * valida cada jogada e decide vitoria/empate. J1 e J2 vem por ponteiro. */
-static void jogarPartida(Jogador *jogador1, Jogador *jogador2)
+ * valida cada jogada e decide vitoria/empate. J1 e J2 vem por ponteiro,
+ * e as estatisticas gerais sao atualizadas via ponteiro tambem . */
+static void jogarPartida(Jogador *jogador1, Jogador *jogador2,
+                         Estatisticas *stats)
 {
     int tamanho = escolherTamanhoTabuleiro();
     char **tabuleiro = alocarTabuleiro(tamanho);
@@ -432,13 +459,16 @@ static void jogarPartida(Jogador *jogador1, Jogador *jogador2)
 
         if (verificarVitoria(tabuleiro, tamanho, daVez->marca)) {
             daVez->vitorias++;
+            stats->partidas++;
             printf(">>> Parabens, %s! Vitoria com '%c'.\n",
                    daVez->nome, daVez->marca);
-            salvarPlacar(jogador1, jogador2);      /* grava apos a partida */
+            salvarPlacar(jogador1, jogador2, stats); /* grava apos a partida */
             break;
         }
 
         if (jogadasFeitas == casasTotais) {
+            stats->partidas++;
+            stats->empates++;
             printf(">>> Empate (velha)! Ninguem pontua.\n");
             break;
         }
@@ -466,6 +496,7 @@ int main(void)
 
     Jogador jogador1 = { "", 'X', 0 };       /* jogador 1 sempre usa 'X'   */
     Jogador jogador2 = { "", 'O', 0 };       /* jogador 2 sempre usa 'O'   */
+    Estatisticas stats = { 0, 0 };           /* partidas e empates do par  */
     char caminhoPlacar[MAX_NOME * 2 + 16];
 
     printf("=================================\n");
@@ -484,19 +515,19 @@ int main(void)
 
     construirCaminhoDoPlacar(&jogador1, &jogador2, caminhoPlacar,
                              sizeof caminhoPlacar);
-    carregarPlacar(caminhoPlacar, &jogador1, &jogador2);
-    imprimirPlacar(&jogador1, &jogador2);
+    carregarPlacar(caminhoPlacar, &jogador1, &jogador2, &stats);
+    imprimirPlacar(&jogador1, &jogador2, &stats);
 
     int opcao;
     do {
-        jogarPartida(&jogador1, &jogador2);
+        jogarPartida(&jogador1, &jogador2, &stats);
         opcao = lerInteiro("\nDeseja jogar novamente? (1 = sim, 2 = nao): ",
                            1, 2);
     } while (opcao == 1);
 
     printf("\nFim de jogo. Placar final:\n");
-    imprimirPlacar(&jogador1, &jogador2);
-    salvarPlacar(&jogador1, &jogador2);      /* garante o arquivo em dia . */
+    imprimirPlacar(&jogador1, &jogador2, &stats);
+    salvarPlacar(&jogador1, &jogador2, &stats); /* garante o arquivo em dia */
     printf("Obrigado por jogar!\n");
 
     return 0;
